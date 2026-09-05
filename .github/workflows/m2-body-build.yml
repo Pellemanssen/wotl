@@ -1,0 +1,46 @@
+name: Build body variants
+
+on:
+  push:
+    branches:
+      - work/a-little-extra-transfer
+    paths:
+      - 'tools/m2_body_patch.py'
+      - '.github/workflows/m2-body-build.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate body models
+        run: python tools/m2_body_patch.py
+      - name: Validate generated M2 headers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import struct
+          files=list(Path('generated/Character').rglob('*.m2'))
+          assert len(files)==3, files
+          for p in files:
+              b=p.read_bytes()
+              assert b[:4]==b'MD20'
+              assert struct.unpack_from('<I',b,4)[0]==264
+              n,o=struct.unpack_from('<II',b,0x3c)
+              assert n>0 and o+n*48<=len(b)
+              print(p, len(b), n)
+          PY
+      - name: Commit generated models
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add generated analysis/body_patch_report.json
+          git diff --cached --quiet && exit 0
+          git commit -m "Generate Orc Draenei Scourge Extra body models"
+          git push
