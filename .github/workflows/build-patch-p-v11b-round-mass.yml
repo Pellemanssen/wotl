@@ -1,0 +1,90 @@
+name: Build patch-P v11b Round Mass MPQ
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - 'tools/m2_body_patch_v11_round_mass.py'
+      - 'tools/m2_body_patch_v11_round_mass_build.py'
+      - '.github/workflows/build-patch-p-v11b-round-mass.yml'
+  workflow_dispatch:
+
+jobs:
+  build-mpq:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install StormLib MPQ utility
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y smpq
+      - name: Generate tuned v11 round-mass models
+        run: python tools/m2_body_patch_v11_round_mass_build.py
+      - name: Validate model report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('analysis/body_patch_v11_round_mass_report.json'))
+          print('ALE fit:',r['reference']['fit'])
+          for race,v in r['races'].items():
+              print(race,'breast verts',v['breast_changed_vertices'],
+                    'forward',v['breast_forward_vertices'],
+                    'pullback',v['breast_pullback_vertices'],
+                    'shoulder/lower fill',v['shoulder_underbreast_fill_vertices'],
+                    'dx',v['max_breast_dx'],'dy',v['max_breast_dy'],
+                    'broadness',v['output_broadness_ratio'])
+              assert v['breast_below_chest_low']==0
+              assert v['only_vertex_xy_changed'] is True
+              assert v['z_unchanged'] is True
+              assert v['breast_changed_vertices'] >= 80
+              assert v['shoulder_underbreast_fill_vertices'] >= 20
+          PY
+      - name: Create WotLK MPQ v1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf mpqroot_v11b mpqextract_v11b patch-P.MPQ
+          mkdir -p mpqroot_v11b
+          cp -a generated_v11_round_mass/Character mpqroot_v11b/
+          cd mpqroot_v11b
+          mapfile -t files < <(find Character -type f | sort)
+          smpq -c -M 1 -C ZLIB ../patch-P.MPQ "${files[@]}"
+          cd ..
+          smpq -i patch-P.MPQ | tee analysis/patch-P-v11b-info.txt
+          smpq -l patch-P.MPQ | tee analysis/patch-P-v11b-list.txt
+      - name: Validate archive and round-trip bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in OrcFemale.m2 OrcFemale00.skin DraeneiFemale.m2 DraeneiFemale00.skin ScourgeFemale.m2 ScourgeFemale00.skin; do
+            grep -qi "$f" analysis/patch-P-v11b-list.txt || { echo "Missing from MPQ: $f"; exit 1; }
+          done
+          mkdir mpqextract_v11b
+          cd mpqextract_v11b
+          smpq -x ../patch-P.MPQ
+          cd ..
+          cmp generated_v11_round_mass/Character/Orc/Female/OrcFemale.m2 mpqextract_v11b/Character/Orc/Female/OrcFemale.m2
+          cmp generated_v11_round_mass/Character/Orc/Female/OrcFemale00.skin mpqextract_v11b/Character/Orc/Female/OrcFemale00.skin
+          cmp generated_v11_round_mass/Character/Draenei/Female/DraeneiFemale.m2 mpqextract_v11b/Character/Draenei/Female/DraeneiFemale.m2
+          cmp generated_v11_round_mass/Character/Draenei/Female/DraeneiFemale00.skin mpqextract_v11b/Character/Draenei/Female/DraeneiFemale00.skin
+          cmp generated_v11_round_mass/Character/Scourge/Female/ScourgeFemale.m2 mpqextract_v11b/Character/Scourge/Female/ScourgeFemale.m2
+          cmp generated_v11_round_mass/Character/Scourge/Female/ScourgeFemale00.skin mpqextract_v11b/Character/Scourge/Female/ScourgeFemale00.skin
+          sha256sum patch-P.MPQ | tee analysis/patch-P-v11b.sha256
+      - name: Upload ready-to-test patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-P-WotLK-Extra-v11-RoundMass
+          path: |
+            patch-P.MPQ
+            analysis/body_patch_v11_round_mass_report.json
+            analysis/patch-P-v11b-info.txt
+            analysis/patch-P-v11b-list.txt
+            analysis/patch-P-v11b.sha256
+          if-no-files-found: error
