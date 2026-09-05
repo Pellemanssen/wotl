@@ -1,0 +1,69 @@
+name: Build patch-P v6 Massier MPQ
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - 'tools/m2_body_patch_v6_massier.py'
+      - '.github/workflows/build-patch-p-v6-massier.yml'
+  workflow_dispatch:
+
+jobs:
+  build-mpq:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install StormLib MPQ utility
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y smpq
+      - name: Generate v6 massier models
+        run: python tools/m2_body_patch_v6_massier.py
+      - name: Create WotLK MPQ v1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf mpqroot_v6 mpqextract_v6 patch-P.MPQ
+          mkdir -p mpqroot_v6
+          cp -a generated_v6_massier/Character mpqroot_v6/
+          cd mpqroot_v6
+          mapfile -t files < <(find Character -type f | sort)
+          printf 'Adding %s files to MPQ\n' "${#files[@]}"
+          smpq -c -M 1 -C ZLIB ../patch-P.MPQ "${files[@]}"
+          cd ..
+          smpq -i patch-P.MPQ | tee analysis/patch-P-v6-info.txt
+          smpq -l patch-P.MPQ | tee analysis/patch-P-v6-list.txt
+      - name: Validate archive and round-trip bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in OrcFemale.m2 OrcFemale00.skin DraeneiFemale.m2 DraeneiFemale00.skin ScourgeFemale.m2 ScourgeFemale00.skin; do
+            grep -qi "$f" analysis/patch-P-v6-list.txt || { echo "Missing from MPQ: $f"; exit 1; }
+          done
+          mkdir mpqextract_v6
+          cd mpqextract_v6
+          smpq -x ../patch-P.MPQ
+          cd ..
+          cmp generated_v6_massier/Character/Orc/Female/OrcFemale.m2 mpqextract_v6/Character/Orc/Female/OrcFemale.m2
+          cmp generated_v6_massier/Character/Orc/Female/OrcFemale00.skin mpqextract_v6/Character/Orc/Female/OrcFemale00.skin
+          cmp generated_v6_massier/Character/Draenei/Female/DraeneiFemale.m2 mpqextract_v6/Character/Draenei/Female/DraeneiFemale.m2
+          cmp generated_v6_massier/Character/Draenei/Female/DraeneiFemale00.skin mpqextract_v6/Character/Draenei/Female/DraeneiFemale00.skin
+          cmp generated_v6_massier/Character/Scourge/Female/ScourgeFemale.m2 mpqextract_v6/Character/Scourge/Female/ScourgeFemale.m2
+          cmp generated_v6_massier/Character/Scourge/Female/ScourgeFemale00.skin mpqextract_v6/Character/Scourge/Female/ScourgeFemale00.skin
+          sha256sum patch-P.MPQ | tee analysis/patch-P-v6.sha256
+      - name: Upload ready-to-test patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-P-WotLK-Extra-v6-Massier
+          path: |
+            patch-P.MPQ
+            analysis/body_patch_v6_massier_report.json
+            analysis/patch-P-v6-info.txt
+            analysis/patch-P-v6-list.txt
+            analysis/patch-P-v6.sha256
+          if-no-files-found: error
