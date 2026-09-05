@@ -1,0 +1,73 @@
+name: Build patch-P v2 MPQ
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - 'tools/amplify_body_v2.py'
+      - '.github/workflows/build-patch-p-v2.yml'
+  workflow_dispatch:
+
+jobs:
+  build-mpq:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install StormLib MPQ utility
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y smpq
+          smpq --version
+      - name: Generate stronger v2 models
+        run: python tools/amplify_body_v2.py
+      - name: Create WotLK MPQ v1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf mpqroot mpqextract patch-P.MPQ
+          mkdir -p mpqroot
+          cp -a generated_v2/Character mpqroot/
+          cd mpqroot
+          mapfile -t files < <(find Character -type f | sort)
+          printf 'Adding %s files to MPQ\n' "${#files[@]}"
+          smpq -c -M 1 -C ZLIB ../patch-P.MPQ "${files[@]}"
+          cd ..
+          smpq -i patch-P.MPQ | tee analysis/patch-P-info.txt
+          smpq -l patch-P.MPQ | tee analysis/patch-P-list.txt
+      - name: Validate archive names and round-trip bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            OrcFemale.m2 OrcFemale00.skin \
+            DraeneiFemale.m2 DraeneiFemale00.skin \
+            ScourgeFemale.m2 ScourgeFemale00.skin; do
+            grep -qi "$f" analysis/patch-P-list.txt || { echo "Missing from MPQ: $f"; exit 1; }
+          done
+          mkdir mpqextract
+          cd mpqextract
+          smpq -x ../patch-P.MPQ
+          cd ..
+          cmp generated_v2/Character/Orc/Female/OrcFemale.m2 mpqextract/Character/Orc/Female/OrcFemale.m2
+          cmp generated_v2/Character/Orc/Female/OrcFemale00.skin mpqextract/Character/Orc/Female/OrcFemale00.skin
+          cmp generated_v2/Character/Draenei/Female/DraeneiFemale.m2 mpqextract/Character/Draenei/Female/DraeneiFemale.m2
+          cmp generated_v2/Character/Draenei/Female/DraeneiFemale00.skin mpqextract/Character/Draenei/Female/DraeneiFemale00.skin
+          cmp generated_v2/Character/Scourge/Female/ScourgeFemale.m2 mpqextract/Character/Scourge/Female/ScourgeFemale.m2
+          cmp generated_v2/Character/Scourge/Female/ScourgeFemale00.skin mpqextract/Character/Scourge/Female/ScourgeFemale00.skin
+          sha256sum patch-P.MPQ | tee analysis/patch-P.sha256
+      - name: Upload ready-to-test patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-P-WotLK-Extra-v2
+          path: |
+            patch-P.MPQ
+            analysis/body_patch_v2_report.json
+            analysis/patch-P-info.txt
+            analysis/patch-P-list.txt
+            analysis/patch-P.sha256
+          if-no-files-found: error
