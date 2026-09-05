@@ -1,0 +1,78 @@
+name: Evaluate all v12 race silhouettes
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - '.github/workflows/m2-v12-eval-all.yml'
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/m2_body_patch_v12_surface_fit.py >/tmp/v12.txt
+      - name: Print complete body-only metrics
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys,struct,json,math
+          from pathlib import Path
+          sys.path.insert(0,'tools')
+          import m2_body_patch_v9_ale_transfer as v9
+          import m2_body_patch_v12_surface_fit as v12
+          def u32(b,o):return struct.unpack_from('<I',b,o)[0]
+          def body0(s,n):
+            b=Path(s).read_bytes();ni,oi=u32(b,4),u32(b,8);ns,os=u32(b,28),u32(b,32);idx=[struct.unpack_from('<H',b,oi+i*2)[0] for i in range(ni)];r=set()
+            for a in range(ns):
+              o=os+a*48
+              if struct.unpack_from('<H',b,o)[0]!=0:continue
+              vs,vc=struct.unpack_from('<HH',b,o+4)
+              for j in range(vs,min(vs+vc,len(idx))):
+                if idx[j]<n:r.add(idx[j])
+            return r
+          def q(a,p):
+            if not a:return None
+            a=sorted(a);x=(len(a)-1)*p;l=int(x);h=min(len(a)-1,l+1);t=x-l;return a[l]*(1-t)+a[h]*t
+          def sil(m,vs,zc):
+            zs=[.60+i*.005 for i in range(79)];raw=[]
+            for zz in zs:
+              a=[]
+              for i in vs:
+                x,y,z=m['pos'][i];yn=abs(y)/max(m['arm_y'],1e-9);zn=(z-m['root'][2])/m['torso']
+                if .16<=yn<=.68 and abs(zn-zz)<=.0175:
+                  xn=(x-m['cx'](z))/m['torso']
+                  if xn>-.24:a.append(xn)
+              raw.append(q(a,.98) if len(a)>=2 else (max(a) if a else None))
+            for k in range(len(raw)):
+              if raw[k] is not None:continue
+              a=[]
+              for d in range(1,8):
+                for kk in(k-d,k+d):
+                  if 0<=kk<len(raw) and raw[kk] is not None:a.append(raw[kk])
+                if a:break
+              raw[k]=sum(a)/len(a) if a else 0
+            lo=max(.60,zc-.145);hi=min(.99,zc+.145)
+            def avg(z):
+              ii=min(range(len(zs)),key=lambda i:abs(zs[i]-z));a=raw[max(0,ii-2):min(len(raw),ii+3)];return sum(a)/len(a)
+            xl,xh=avg(lo),avg(hi)
+            dep=[max(0,x-(xl+(xh-xl)*(z-lo)/max(1e-9,hi-lo))) for x,z in zip(raw,zs)]
+            ks=[i for i,z in enumerate(zs) if zc-.10<=z<=zc+.10];kp=max(ks,key=lambda i:dep[i]);pk=dep[kp];zp=zs[kp]
+            def at(d):return dep[min(range(len(zs)),key=lambda i:abs(zs[i]-(zp+d)))]
+            h=[zs[i] for i in range(len(zs)) if zc-.15<=zs[i]<=zc+.15 and dep[i]>=pk*.5]
+            return {'zpeak':zp,'peak':pk,'s02':(at(-.02)+at(.02))/2/max(pk,1e-9),'s04':(at(-.04)+at(.04))/2/max(pk,1e-9),'s06':(at(-.06)+at(.06))/2/max(pk,1e-9),'s08':(at(-.08)+at(.08))/2/max(pk,1e-9),'fwhm':max(h)-min(h) if h else 0}
+          rep=json.load(open('analysis/body_patch_v12_surface_fit_report.json'))
+          root=Path('.')
+          for race,c in v12.TARGETS.items():
+            o=v9.load_model(c['m2'],c['skin']);n=v9.load_model(root/'generated_v12_surface_fit/Character'/race/'Female'/(c['out']+'.m2'),c['skin']);vs=body0(c['skin'],o['n'])
+            print('\n###',race)
+            print('original',json.dumps(sil(o,vs,c['zc'])))
+            print('v12     ',json.dumps(sil(n,vs,c['zc'])))
+            rr=rep['races'][race]
+            print('dx',json.dumps({k:rr[k] for k in ('body_positive_dx','body_negative_dx','body_dx_min','body_dx_max','apex_mean_dx','shell_mean_dx','apex_n','shell_n','body_chest_changed')}))
+          PY
