@@ -1,0 +1,85 @@
+name: Prepare Blender workfiles v15b
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - '.github/workflows/prepare-blender-workfiles-v15b.yml'
+      - 'tools/m2_body_patch_v15b_mass_surface.py'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate current v15b starting models
+        run: python tools/m2_body_patch_v15b_mass_surface.py
+      - name: Build Blender prep folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf Blender_Workfiles_v15b
+          mkdir -p Blender_Workfiles_v15b/01_EDIT_THESE/Orc
+          mkdir -p Blender_Workfiles_v15b/01_EDIT_THESE/Draenei
+          mkdir -p Blender_Workfiles_v15b/01_EDIT_THESE/Scourge
+          mkdir -p Blender_Workfiles_v15b/02_ORIGINAL_BACKUP/Orc
+          mkdir -p Blender_Workfiles_v15b/02_ORIGINAL_BACKUP/Draenei
+          mkdir -p Blender_Workfiles_v15b/02_ORIGINAL_BACKUP/Scourge
+
+          cp generated_v15b_mass_surface/Character/Orc/Female/OrcFemale.m2 Blender_Workfiles_v15b/01_EDIT_THESE/Orc/
+          cp generated_v15b_mass_surface/Character/Orc/Female/OrcFemale00.skin Blender_Workfiles_v15b/01_EDIT_THESE/Orc/
+          cp generated_v15b_mass_surface/Character/Draenei/Female/DraeneiFemale.m2 Blender_Workfiles_v15b/01_EDIT_THESE/Draenei/
+          cp generated_v15b_mass_surface/Character/Draenei/Female/DraeneiFemale00.skin Blender_Workfiles_v15b/01_EDIT_THESE/Draenei/
+          cp generated_v15b_mass_surface/Character/Scourge/Female/ScourgeFemale.m2 Blender_Workfiles_v15b/01_EDIT_THESE/Scourge/
+          cp generated_v15b_mass_surface/Character/Scourge/Female/ScourgeFemale00.skin Blender_Workfiles_v15b/01_EDIT_THESE/Scourge/
+
+          cp 'Orc Female/OrcFemale.m2' Blender_Workfiles_v15b/02_ORIGINAL_BACKUP/Orc/
+          cp 'Orc Female/OrcFemale00.skin' Blender_Workfiles_v15b/02_ORIGINAL_BACKUP/Orc/
+          cp 'Draenai Female/DRAENEIFemale.m2' Blender_Workfiles_v15b/02_ORIGINAL_BACKUP/Draenei/DraeneiFemale.m2
+          cp 'Draenai Female/DRAENEIFemale00.skin' Blender_Workfiles_v15b/02_ORIGINAL_BACKUP/Draenei/DraeneiFemale00.skin
+          cp 'Scourge Female/ScourgeFemale.m2' Blender_Workfiles_v15b/02_ORIGINAL_BACKUP/Scourge/
+          cp 'Scourge Female/ScourgeFemale00.skin' Blender_Workfiles_v15b/02_ORIGINAL_BACKUP/Scourge/
+
+          cat > Blender_Workfiles_v15b/READ_ME_FIRST.txt <<'EOF'
+          WotLK 3.3.5a - Blender editing workfiles
+
+          USE THESE:
+            01_EDIT_THESE/Orc/OrcFemale.m2
+            01_EDIT_THESE/Draenei/DraeneiFemale.m2
+            01_EDIT_THESE/Scourge/ScourgeFemale.m2
+
+          The matching 00.skin file must stay next to each M2 when using M2Mod.
+
+          02_ORIGINAL_BACKUP contains untouched source models only as a backup.
+
+          IMPORTANT WHILE EDITING IN BLENDER:
+          - Move existing vertices only.
+          - Do NOT Subdivide.
+          - Do NOT Remesh.
+          - Do NOT add/delete vertices or faces.
+          - Do NOT Apply modifiers that change topology.
+          - Do NOT touch bones/weights unless specifically instructed.
+          - Symmetry/X-Mirror is fine for sculpting if it only moves existing vertices.
+
+          Goal:
+          Draenei: keep the rounder breast shape, make it larger; do not pull the belly.
+          Orc: manually round the breast and remove the pointed/conical tip; add broad mass.
+          Scourge: same as Orc, but slightly less extreme.
+
+          After editing, export each model back to M2I and send the M2I files back in chat.
+          The assistant will rebuild the final M2/SKIN/MPQ.
+          EOF
+
+          find Blender_Workfiles_v15b -type f -maxdepth 4 -print | sort
+      - name: Upload Blender prep package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blender-Workfiles-v15b-Orc-Draenei-Scourge
+          path: Blender_Workfiles_v15b
+          if-no-files-found: error
+          compression-level: 6
