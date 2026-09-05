@@ -1,0 +1,38 @@
+{
+  "Orc": {
+    "source_m2_sha256": "a90f46d9be317bb59a9463dd68f0da46b24253ebc7bab2ee23ee9fe197ac57fd",
+    "generated_m2_sha256": "b0595a146ede500a066efbe2c4369456e79dc2539a6c7de7b7542897cdd62974",
+    "source_skin_sha256": "bd03befb2f59e63a0cd556ce9aeb6d6d307956ab8af992b4d96859c5229a93b9",
+    "generated_skin_sha256": "bd03befb2f59e63a0cd556ce9aeb6d6d307956ab8af992b4d96859c5229a93b9",
+    "m2_size": 7483808,
+    "skin_size": 206240,
+    "vertices": 14397,
+    "changed_vertex_positions": 6755,
+    "only_vertex_xyz_changed": true,
+    "skin_bit_identical": true
+  },
+  "Draenei": {
+    "source_m2_sha256": "18f88462f3c69b9d0c26c432bab51364c676625bbe592c8c53ec9982de7e55cc",
+    "generated_m2_sha256": "7bdf34fa8f712b176a2ca96efe850f895fc307bc2276aa1331b5a502de6148ca",
+    "source_skin_sha256": "9f6ee0ea24774e6e2da35e078573f08ae62187d687aae8a241cf5e1509f19a37",
+    "generated_skin_sha256": "9f6ee0ea24774e6e2da35e078573f08ae62187d687aae8a241cf5e1509f19a37",
+    "m2_size": 8174880,
+    "skin_size": 233600,
+    "vertices": 16340,
+    "changed_vertex_positions": 5550,
+    "only_vertex_xyz_changed": true,
+    "skin_bit_identical": true
+  },
+  "Scourge": {
+    "source_m2_sha256": "b566b8a9501ece52b2c4188f0bc787d971162d159edf1c1e662d72d12af3423a",
+    "generated_m2_sha256": "80590d149bba3e9ee08b93ba7ab62185effce79c410452b01b25f8c76bca1d81",
+    "source_skin_sha256": "40212d04bdbdba1c668f9142c73b0c8c0fdbde1b15fc23f94a2e14c879da96d6",
+    "generated_skin_sha256": "40212d04bdbdba1c668f9142c73b0c8c0fdbde1b15fc23f94a2e14c879da96d6",
+    "m2_size": 6468752,
+    "skin_size": 249584,
+    "vertices": 18962,
+    "changed_vertex_positions": 5345,
+    "only_vertex_xyz_changed": true,
+    "skin_bit_identical": true
+  }
+}
