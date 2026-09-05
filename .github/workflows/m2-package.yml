@@ -1,0 +1,44 @@
+name: Verify and package body variants
+
+on:
+  push:
+    branches:
+      - work/a-little-extra-transfer
+    paths:
+      - 'tools/m2_verify_generated.py'
+      - '.github/workflows/m2-package.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify generated models strictly
+        run: python tools/m2_verify_generated.py
+      - name: Build test ZIP
+        run: |
+          rm -f WotLK-Extra-Orc-Draenei-Scourge.zip
+          cd generated
+          zip -9 -r ../WotLK-Extra-Orc-Draenei-Scourge.zip Character README.md
+          cd ..
+          sha256sum WotLK-Extra-Orc-Draenei-Scourge.zip > analysis/package.sha256
+      - name: Commit verification report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add analysis/generated_verify.json analysis/package.sha256
+          git diff --cached --quiet && exit 0
+          git commit -m "Verify generated body models and package checksum"
+          git push
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: WotLK-Extra-Orc-Draenei-Scourge
+          path: WotLK-Extra-Orc-Draenei-Scourge.zip
+          if-no-files-found: error
