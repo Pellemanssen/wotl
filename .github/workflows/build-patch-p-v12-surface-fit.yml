@@ -1,0 +1,153 @@
+name: Build patch-P v12 Surface Fit MPQ
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - 'tools/m2_body_patch_v12_surface_fit.py'
+      - '.github/workflows/build-patch-p-v12-surface-fit.yml'
+
+jobs:
+  build-mpq:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install StormLib MPQ utility
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y smpq
+      - name: Generate v12 absolute surface-fit models
+        run: python tools/m2_body_patch_v12_surface_fit.py
+      - name: Measure side silhouettes and gate against cone shapes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys, struct, json, math
+          from pathlib import Path
+          sys.path.insert(0,'tools')
+          import m2_body_patch_v9_ale_transfer as v9
+          import m2_body_patch_v12_surface_fit as v12
+          def u32(b,o): return struct.unpack_from('<I',b,o)[0]
+          def body0(skin,n):
+              b=Path(skin).read_bytes(); nidx,oidx=u32(b,4),u32(b,8); nsub,osub=u32(b,28),u32(b,32)
+              idx=[struct.unpack_from('<H',b,oidx+i*2)[0] for i in range(nidx)]; out=set()
+              for i in range(nsub):
+                  o=osub+i*48; sid=struct.unpack_from('<H',b,o)[0]
+                  if sid!=0: continue
+                  vs=struct.unpack_from('<H',b,o+4)[0]; vc=struct.unpack_from('<H',b,o+6)[0]
+                  for j in range(vs,min(vs+vc,len(idx))):
+                      if idx[j]<n: out.add(idx[j])
+              return out
+          def q(a,p):
+              if not a:return None
+              a=sorted(a); t=(len(a)-1)*p; lo=int(t); hi=min(len(a)-1,lo+1); f=t-lo
+              return a[lo]*(1-f)+a[hi]*f
+          def silhouette(m,verts,zc_hint=None):
+              zs=[.62+i*(.35/70) for i in range(71)]; raw=[]
+              for zc in zs:
+                  vals=[]
+                  for i in verts:
+                      x,y,z=m['pos'][i]; yn=abs(y)/max(m['arm_y'],1e-9); zn=(z-m['root'][2])/m['torso']
+                      if .16<=yn<=.68 and abs(zn-zc)<=.0175:
+                          xn=(x-m['cx'](z))/m['torso']
+                          if xn>-.24: vals.append(xn)
+                  raw.append(q(vals,.98) if len(vals)>=2 else (max(vals) if vals else None))
+              for k in range(len(raw)):
+                  if raw[k] is not None: continue
+                  vals=[]
+                  for d in range(1,8):
+                      for kk in (k-d,k+d):
+                          if 0<=kk<len(raw) and raw[kk] is not None: vals.append(raw[kk])
+                      if vals: break
+                  raw[k]=sum(vals)/len(vals) if vals else 0
+              # local baseline uses samples just outside the intended breast footprint
+              if zc_hint is None: zc_hint=.82
+              lo=max(.62,zc_hint-.145); hi=min(.97,zc_hint+.145)
+              ilo=min(range(len(zs)),key=lambda i:abs(zs[i]-lo)); ihi=min(range(len(zs)),key=lambda i:abs(zs[i]-hi))
+              xlo=sum(raw[max(0,ilo-2):min(len(raw),ilo+3)])/len(raw[max(0,ilo-2):min(len(raw),ilo+3)])
+              xhi=sum(raw[max(0,ihi-2):min(len(raw),ihi+3)])/len(raw[max(0,ihi-2):min(len(raw),ihi+3)])
+              def base(z): return xlo+(xhi-xlo)*(z-lo)/max(1e-9,hi-lo)
+              dep=[max(0,x-base(z)) for x,z in zip(raw,zs)]
+              ks=[i for i,z in enumerate(zs) if zc_hint-.09<=z<=zc_hint+.09]
+              kp=max(ks,key=lambda i:dep[i]); peak=dep[kp]; zpeak=zs[kp]
+              def at(d): return dep[min(range(len(zs)),key=lambda i:abs(zs[i]-(zpeak+d)))]
+              s04=(at(-.04)+at(.04))/2/max(peak,1e-9)
+              s07=(at(-.07)+at(.07))/2/max(peak,1e-9)
+              half=[zs[i] for i in range(len(zs)) if zc_hint-.15<=zs[i]<=zc_hint+.15 and dep[i]>=peak*.5]
+              fwhm=max(half)-min(half) if half else 0
+              return {'zpeak':zpeak,'peak_depth':peak,'shoulder04':s04,'shoulder07':s07,'fwhm_z':fwhm}
+          root=Path('.')
+          ale=v9.load_model(root/'bloodelf/female/bloodelffemale.m2',root/'bloodelf/female/bloodelffemale00.skin')
+          ale_s=silhouette(ale,body0(root/'bloodelf/female/bloodelffemale00.skin',ale['n']),.84)
+          report=json.load(open('analysis/body_patch_v12_surface_fit_report.json'))
+          qa={'ALE':ale_s,'races':{}}
+          for race,cfg in v12.TARGETS.items():
+              orig=v9.load_model(cfg['m2'],cfg['skin'])
+              newp=root/'generated_v12_surface_fit/Character'/race/'Female'/(cfg['out']+'.m2')
+              new=v9.load_model(newp,cfg['skin']); verts=body0(cfg['skin'],orig['n'])
+              os=silhouette(orig,verts,cfg['zc']); ns=silhouette(new,verts,cfg['zc'])
+              r=report['races'][race]
+              rec={'original':os,'v12':ns,'apex_mean_dx':r['apex_mean_dx'],'shell_mean_dx':r['shell_mean_dx'],
+                   'positive':r['body_positive_dx'],'negative':r['body_negative_dx'],'body_chest_changed':r['body_chest_changed']}
+              qa['races'][race]=rec
+              print('\n',race,json.dumps(rec,indent=2))
+              # Objective no-cone gates. Broadness must stay near the ALE character of shape;
+              # projection cannot be concentrated into a narrow peak.
+              assert ns['shoulder04'] >= 0.72, (race,'near-apex shoulder too thin',ns)
+              assert ns['shoulder07'] >= 0.42, (race,'mid shoulder too thin',ns)
+              assert ns['fwhm_z'] >= 0.165, (race,'breast full-width too narrow',ns)
+              assert abs(ns['zpeak']-cfg['zc']) <= 0.065, (race,'peak shifted away from native anatomy',ns,cfg['zc'])
+              assert ns['peak_depth'] <= 0.175, (race,'forward peak too deep / cone risk',ns)
+              assert r['body_chest_changed'] >= 25
+              # The centre tip must receive less added X than the surrounding lobe mass.
+              assert r['apex_mean_dx'] <= r['shell_mean_dx'] + 0.010, (race,'apex pushed harder than shell',r['apex_mean_dx'],r['shell_mean_dx'])
+              assert r['only_vertex_xy_changed'] and r['z_unchanged']
+          Path('analysis/body_patch_v12_shape_qa.json').write_text(json.dumps(qa,indent=2))
+          print('\nALE reference',ale_s)
+          PY
+      - name: Create WotLK MPQ v1 only after shape QA passes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf mpqroot_v12 mpqextract_v12 patch-P.MPQ
+          mkdir -p mpqroot_v12
+          cp -a generated_v12_surface_fit/Character mpqroot_v12/
+          cd mpqroot_v12
+          mapfile -t files < <(find Character -type f | sort)
+          smpq -c -M 1 -C ZLIB ../patch-P.MPQ "${files[@]}"
+          cd ..
+          smpq -i patch-P.MPQ | tee analysis/patch-P-v12-info.txt
+          smpq -l patch-P.MPQ | tee analysis/patch-P-v12-list.txt
+      - name: Validate archive and exact round trip
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in OrcFemale.m2 OrcFemale00.skin DraeneiFemale.m2 DraeneiFemale00.skin ScourgeFemale.m2 ScourgeFemale00.skin; do
+            grep -qi "$f" analysis/patch-P-v12-list.txt || { echo "Missing from MPQ: $f"; exit 1; }
+          done
+          mkdir mpqextract_v12
+          cd mpqextract_v12
+          smpq -x ../patch-P.MPQ
+          cd ..
+          cmp generated_v12_surface_fit/Character/Orc/Female/OrcFemale.m2 mpqextract_v12/Character/Orc/Female/OrcFemale.m2
+          cmp generated_v12_surface_fit/Character/Orc/Female/OrcFemale00.skin mpqextract_v12/Character/Orc/Female/OrcFemale00.skin
+          cmp generated_v12_surface_fit/Character/Draenei/Female/DraeneiFemale.m2 mpqextract_v12/Character/Draenei/Female/DraeneiFemale.m2
+          cmp generated_v12_surface_fit/Character/Draenei/Female/DraeneiFemale00.skin mpqextract_v12/Character/Draenei/Female/DraeneiFemale00.skin
+          cmp generated_v12_surface_fit/Character/Scourge/Female/ScourgeFemale.m2 mpqextract_v12/Character/Scourge/Female/ScourgeFemale.m2
+          cmp generated_v12_surface_fit/Character/Scourge/Female/ScourgeFemale00.skin mpqextract_v12/Character/Scourge/Female/ScourgeFemale00.skin
+          sha256sum patch-P.MPQ | tee analysis/patch-P-v12.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patch-P-WotLK-Extra-v12-SurfaceFit
+          path: |
+            patch-P.MPQ
+            analysis/body_patch_v12_surface_fit_report.json
+            analysis/body_patch_v12_shape_qa.json
+            analysis/patch-P-v12-info.txt
+            analysis/patch-P-v12-list.txt
+            analysis/patch-P-v12.sha256
