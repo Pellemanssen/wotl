@@ -1,0 +1,30 @@
+name: M2 diagnostics
+
+on:
+  push:
+    branches:
+      - work/a-little-extra-transfer
+    paths-ignore:
+      - 'analysis/**'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Diagnose models
+        run: python tools/m2_diagnose.py
+      - name: Commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add analysis/m2_report.json analysis/m2_report.md
+          git diff --cached --quiet && exit 0
+          git commit -m "Add M2 diagnostic report"
+          git push
