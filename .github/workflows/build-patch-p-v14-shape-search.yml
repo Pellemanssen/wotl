@@ -1,0 +1,88 @@
+name: Build patch-P v14 Shape Search MPQ
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - 'tools/m2_body_patch_v14_shape_search.py'
+      - '.github/workflows/build-patch-p-v14-shape-search.yml'
+  workflow_dispatch:
+
+jobs:
+  build-mpq:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install StormLib MPQ utility
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y smpq
+      - name: Generate v14 constrained round models
+        run: python tools/m2_body_patch_v14_shape_search.py
+      - name: Validate constrained shape search
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          r=json.load(open('analysis/body_patch_v14_shape_search_report.json'))
+          for race,v in r['races'].items():
+              s=v['search']; q=s['selected']; d=s['displacement']
+              print(race,'tested',s['tested'],'feasible',s['feasible'],'params',s['params'])
+              print(' selected',q,'displacement',d)
+              assert s['feasible'] > 0
+              assert q['s04'] >= .72
+              assert q['s07'] >= .55
+              assert abs(q['zpeak'] - v['native']['zc']) <= .045
+              if d['apex_n']:
+                  assert d['apex'] <= d['shell']*.80 + .003
+              assert v['only_vertex_xy_changed'] is True
+              assert v['z_unchanged'] is True
+          PY
+      - name: Create WotLK MPQ v1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf mpqroot_v14 mpqextract_v14 patch-P.MPQ
+          mkdir -p mpqroot_v14
+          cp -a generated_v14_shape_search/Character mpqroot_v14/
+          cd mpqroot_v14
+          mapfile -t files < <(find Character -type f | sort)
+          smpq -c -M 1 -C ZLIB ../patch-P.MPQ "${files[@]}"
+          cd ..
+          smpq -i patch-P.MPQ | tee analysis/patch-P-v14-info.txt
+          smpq -l patch-P.MPQ | tee analysis/patch-P-v14-list.txt
+      - name: Validate archive and exact round-trip bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in OrcFemale.m2 OrcFemale00.skin DraeneiFemale.m2 DraeneiFemale00.skin ScourgeFemale.m2 ScourgeFemale00.skin; do
+            grep -qi "$f" analysis/patch-P-v14-list.txt || { echo "Missing from MPQ: $f"; exit 1; }
+          done
+          mkdir mpqextract_v14
+          cd mpqextract_v14
+          smpq -x ../patch-P.MPQ
+          cd ..
+          cmp generated_v14_shape_search/Character/Orc/Female/OrcFemale.m2 mpqextract_v14/Character/Orc/Female/OrcFemale.m2
+          cmp generated_v14_shape_search/Character/Orc/Female/OrcFemale00.skin mpqextract_v14/Character/Orc/Female/OrcFemale00.skin
+          cmp generated_v14_shape_search/Character/Draenei/Female/DraeneiFemale.m2 mpqextract_v14/Character/Draenei/Female/DraeneiFemale.m2
+          cmp generated_v14_shape_search/Character/Draenei/Female/DraeneiFemale00.skin mpqextract_v14/Character/Draenei/Female/DraeneiFemale00.skin
+          cmp generated_v14_shape_search/Character/Scourge/Female/ScourgeFemale.m2 mpqextract_v14/Character/Scourge/Female/ScourgeFemale.m2
+          cmp generated_v14_shape_search/Character/Scourge/Female/ScourgeFemale00.skin mpqextract_v14/Character/Scourge/Female/ScourgeFemale00.skin
+          sha256sum patch-P.MPQ | tee analysis/patch-P-v14.sha256
+      - name: Upload ready-to-test patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-P-WotLK-Extra-v14-ShapeSearch
+          path: |
+            patch-P.MPQ
+            analysis/body_patch_v14_shape_search_report.json
+            analysis/patch-P-v14-info.txt
+            analysis/patch-P-v14-list.txt
+            analysis/patch-P-v14.sha256
+          if-no-files-found: error
