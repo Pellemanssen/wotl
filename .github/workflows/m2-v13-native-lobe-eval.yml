@@ -1,0 +1,95 @@
+name: Evaluate v13 native-lobe geometry
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - 'tools/m2_body_patch_v13_native_lobe.py'
+      - '.github/workflows/m2-v13-native-lobe-eval.yml'
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install matplotlib
+      - run: python tools/m2_body_patch_v13_native_lobe.py
+      - name: Evaluate and render side silhouettes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys,struct,json,math
+          from pathlib import Path
+          sys.path.insert(0,'tools')
+          import m2_body_patch_v9_ale_transfer as v9
+          import m2_body_patch_v13_native_lobe as v13
+          import matplotlib.pyplot as plt
+          def u32(b,o):return struct.unpack_from('<I',b,o)[0]
+          def body0(s,n):
+            b=Path(s).read_bytes();ni,oi=u32(b,4),u32(b,8);ns,os=u32(b,28),u32(b,32);idx=[struct.unpack_from('<H',b,oi+i*2)[0] for i in range(ni)];r=set()
+            for a in range(ns):
+              o=os+a*48
+              if struct.unpack_from('<H',b,o)[0]!=0:continue
+              vs,vc=struct.unpack_from('<HH',b,o+4)
+              for j in range(vs,min(vs+vc,len(idx))):
+                if idx[j]<n:r.add(idx[j])
+            return r
+          def q(a,p):
+            if not a:return None
+            a=sorted(a);x=(len(a)-1)*p;l=int(x);h=min(len(a)-1,l+1);t=x-l;return a[l]*(1-t)+a[h]*t
+          def curve(m,vs,zc):
+            zs=[zc-.16+i*.004 for i in range(81)];raw=[]
+            for zz in zs:
+              a=[]
+              for i in vs:
+                x,y,z=m['pos'][i];yn=abs(y)/max(m['arm_y'],1e-9);zn=(z-m['root'][2])/m['torso']
+                if .17<=yn<=.67 and abs(zn-zz)<=.018:
+                  xn=(x-m['cx'](z))/m['torso']
+                  if xn>-.20:a.append(xn)
+              raw.append(q(a,.97) if len(a)>=2 else (max(a) if a else None))
+            for k in range(len(raw)):
+              if raw[k] is not None:continue
+              vals=[]
+              for d in range(1,8):
+                for kk in(k-d,k+d):
+                  if 0<=kk<len(raw) and raw[kk] is not None:vals.append(raw[kk])
+                if vals:break
+              raw[k]=sum(vals)/len(vals) if vals else 0
+            # 5-row triangular smoothing suppresses topology sampling spikes, not shape.
+            sm=[]
+            for k in range(len(raw)):
+              vals=[];wts=[]
+              for d,w in ((-2,1),(-1,2),(0,3),(1,2),(2,1)):
+                kk=max(0,min(len(raw)-1,k+d));vals.append(raw[kk]*w);wts.append(w)
+              sm.append(sum(vals)/sum(wts))
+            # Baseline from the two outside ends of the lobe window.
+            xl=sum(sm[:5])/5;xh=sum(sm[-5:])/5;zl=zs[2];zh=zs[-3]
+            dep=[max(0,x-(xl+(xh-xl)*(z-zl)/(zh-zl))) for x,z in zip(sm,zs)]
+            kp=max(range(12,len(zs)-12),key=lambda i:dep[i]);pk=dep[kp];zp=zs[kp]
+            def at(d):return dep[min(range(len(zs)),key=lambda i:abs(zs[i]-(zp+d)))]
+            half=[zs[i] for i in range(len(zs)) if dep[i]>=pk*.5]
+            return {'zs':zs,'x':sm,'dep':dep,'zpeak':zp,'peak':pk,'s02':(at(-.02)+at(.02))/2/max(pk,1e-9),'s04':(at(-.04)+at(.04))/2/max(pk,1e-9),'s06':(at(-.06)+at(.06))/2/max(pk,1e-9),'s08':(at(-.08)+at(.08))/2/max(pk,1e-9),'fwhm':max(half)-min(half) if half else 0}
+          rep=json.load(open('analysis/body_patch_v13_native_lobe_report.json'));root=Path('.');Path('analysis/v13plots').mkdir(parents=True,exist_ok=True);qa={}
+          for race,c in v13.CFG.items():
+            o=v9.load_model(c['m2'],c['skin']);n=v9.load_model(root/'generated_v13_native_lobe/Character'/race/'Female'/(c['out']+'.m2'),c['skin']);vs=body0(c['skin'],o['n'])
+            oc=curve(o,vs,c['zc']);nc=curve(n,vs,c['zc']);rr=rep['races'][race]
+            small=lambda d:{k:v for k,v in d.items() if k not in ('zs','x','dep')}
+            rec={'original':small(oc),'candidate':small(nc),'apex_mean_dx':rr['apex_mean_dx'],'shell_mean_dx':rr['shell_mean_dx'],'body_changed':rr['body_chest_changed'],'gear_changed':rr['replacement_chest_changed'],'negative':rr['body_negative_dx']};qa[race]=rec
+            print('\n###',race,json.dumps(rec,indent=2))
+            plt.figure(figsize=(7,7));plt.scatter([(o['pos'][i][0]-o['cx'](o['pos'][i][2]))/o['torso'] for i in vs if c['zc']-.16<=(o['pos'][i][2]-o['root'][2])/o['torso']<=c['zc']+.16 and .17<=abs(o['pos'][i][1])/o['arm_y']<=.67],[(o['pos'][i][2]-o['root'][2])/o['torso'] for i in vs if c['zc']-.16<=(o['pos'][i][2]-o['root'][2])/o['torso']<=c['zc']+.16 and .17<=abs(o['pos'][i][1])/o['arm_y']<=.67],s=7,alpha=.25,label='original')
+            plt.scatter([(n['pos'][i][0]-n['cx'](n['pos'][i][2]))/n['torso'] for i in vs if c['zc']-.16<=(n['pos'][i][2]-n['root'][2])/n['torso']<=c['zc']+.16 and .17<=abs(n['pos'][i][1])/n['arm_y']<=.67],[(n['pos'][i][2]-n['root'][2])/n['torso'] for i in vs if c['zc']-.16<=(n['pos'][i][2]-n['root'][2])/n['torso']<=c['zc']+.16 and .17<=abs(n['pos'][i][1])/n['arm_y']<=.67],s=7,alpha=.25,label='candidate')
+            plt.plot(oc['x'],oc['zs'],linewidth=2,label='orig envelope');plt.plot(nc['x'],nc['zs'],linewidth=2,label='new envelope');plt.xlabel('forward X / torso');plt.ylabel('Z / torso');plt.title(race+' body0 side chest');plt.legend();plt.grid(True,alpha=.2);plt.savefig('analysis/v13plots/'+race+'.png',dpi=160,bbox_inches='tight');plt.close()
+          Path('analysis/v13-native-lobe-qa.json').write_text(json.dumps(qa,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v13-native-lobe-evaluation
+          path: |
+            analysis/body_patch_v13_native_lobe_report.json
+            analysis/v13-native-lobe-qa.json
+            analysis/v13plots/*.png
