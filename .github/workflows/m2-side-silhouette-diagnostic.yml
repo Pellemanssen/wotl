@@ -1,0 +1,119 @@
+name: M2 side silhouette and apex displacement diagnostic
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - '.github/workflows/m2-side-silhouette-diagnostic.yml'
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Recreate v11
+        shell: bash
+        run: |
+          sed -i 's/if breast_changed < 80:/if breast_changed < 60:/' tools/m2_body_patch_v11_round_mass.py
+          sed -i 's/if shoulder_fill < 20:/if shoulder_fill < 10:/' tools/m2_body_patch_v11_round_mass.py
+          python tools/m2_body_patch_v11_round_mass_build.py >/dev/null
+      - name: Measure true body0 side silhouette
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys, struct, math, json
+          from pathlib import Path
+          sys.path.insert(0,'tools')
+          import m2_body_patch_v9_ale_transfer as v9
+          def u32(b,o): return struct.unpack_from('<I',b,o)[0]
+          def body0(skin,n):
+              b=Path(skin).read_bytes(); nidx,oidx=u32(b,4),u32(b,8); nsub,osub=u32(b,28),u32(b,32)
+              idx=[struct.unpack_from('<H',b,oidx+i*2)[0] for i in range(nidx)]; out=set()
+              for i in range(nsub):
+                  o=osub+i*48; sid=struct.unpack_from('<H',b,o)[0]
+                  if sid!=0: continue
+                  vs=struct.unpack_from('<H',b,o+4)[0]; vc=struct.unpack_from('<H',b,o+6)[0]
+                  for j in range(vs,min(vs+vc,len(idx))):
+                      if idx[j]<n: out.add(idx[j])
+              return out
+          def q(a,p):
+              if not a:return None
+              a=sorted(a); t=(len(a)-1)*p; lo=int(t); hi=min(len(a)-1,lo+1); f=t-lo
+              return a[lo]*(1-f)+a[hi]*f
+          def silhouette(m,verts):
+              zs=[.635+i*(.315/63) for i in range(64)]
+              raw=[]
+              for zc in zs:
+                  vals=[]
+                  for i in verts:
+                      x,y,z=m['pos'][i]; yn=abs(y)/max(m['arm_y'],1e-9); zn=(z-m['root'][2])/m['torso']
+                      if .14<=yn<=.70 and abs(zn-zc)<=.018:
+                          xn=(x-m['cx'](z))/m['torso']
+                          if xn>-.25: vals.append(xn)
+                  raw.append(q(vals,.98) if len(vals)>=2 else (max(vals) if vals else None))
+              # fill gaps by nearest valid
+              for k in range(len(raw)):
+                  if raw[k] is not None: continue
+                  cand=[]
+                  for d in range(1,8):
+                      for kk in (k-d,k+d):
+                          if 0<=kk<len(raw) and raw[kk] is not None: cand.append(raw[kk])
+                      if cand: break
+                  raw[k]=sum(cand)/len(cand) if cand else 0
+              # baseline line from robust lower and upper end bands
+              low=[raw[i] for i,z in enumerate(zs) if .635<=z<=.675]
+              high=[raw[i] for i,z in enumerate(zs) if .915<=z<=.95]
+              x0=q(low,.35); x1=q(high,.35); z0=.655; z1=.9325
+              def base(z): return x0+(x1-x0)*(z-z0)/(z1-z0)
+              dep=[max(0,x-base(z)) for x,z in zip(raw,zs)]
+              ks=[i for i,z in enumerate(zs) if .68<=z<=.90]
+              kp=max(ks,key=lambda i:dep[i]); peak=dep[kp]; zpeak=zs[kp]
+              def at(d): return dep[min(range(len(zs)),key=lambda i:abs(zs[i]-(zpeak+d)))]
+              r04=(at(-.04)+at(.04))/2/max(peak,1e-9)
+              r07=(at(-.07)+at(.07))/2/max(peak,1e-9)
+              r10=(at(-.10)+at(.10))/2/max(peak,1e-9)
+              half=[zs[i] for i in range(len(zs)) if dep[i]>=peak*.5]
+              fwhm=max(half)-min(half) if half else 0
+              return {'zpeak':zpeak,'peak_depth':peak,'shoulder04':r04,'shoulder07':r07,'shoulder10':r10,'fwhm_z':fwhm,'x_low':x0,'x_high':x1}
+          def dx_stats(orig,new,verts):
+              rows=[]
+              for i in verts:
+                  x,y,z=orig['pos'][i]; yn=abs(y)/max(orig['arm_y'],1e-9); zn=(z-orig['root'][2])/orig['torso']; xn=(x-orig['cx'](z))/orig['torso']
+                  if .14<=yn<=.70 and .65<=zn<=.95 and xn>-.20:
+                      dx=(new['pos'][i][0]-x)/orig['torso']; rows.append((xn,yn,zn,dx))
+              if not rows:return {}
+              xcut=q([r[0] for r in rows],.90)
+              apex=[r[3] for r in rows if r[0]>=xcut]
+              shell=[r[3] for r in rows if r[0]<xcut]
+              neg=[r[3] for r in rows if r[3]<-1e-6]; pos=[r[3] for r in rows if r[3]>1e-6]
+              return {'n':len(rows),'positive':len(pos),'negative':len(neg),'min_dx':min(r[3] for r in rows),'max_dx':max(r[3] for r in rows),'apex_mean_dx':sum(apex)/len(apex) if apex else 0,'shell_mean_dx':sum(shell)/len(shell) if shell else 0,'x90':xcut}
+          root=Path('.')
+          defs={
+            'ALE':('bloodelf/female/bloodelffemale.m2','bloodelf/female/bloodelffemale00.skin',None),
+            'Orc':('Orc Female/OrcFemale.m2','Orc Female/OrcFemale00.skin','generated_v11_round_mass/Character/Orc/Female/OrcFemale.m2'),
+            'Draenei':('Draenai Female/DRAENEIFemale.m2','Draenai Female/DRAENEIFemale00.skin','generated_v11_round_mass/Character/Draenei/Female/DraeneiFemale.m2'),
+            'Scourge':('Scourge Female/ScourgeFemale.m2','Scourge Female/ScourgeFemale00.skin','generated_v11_round_mass/Character/Scourge/Female/ScourgeFemale.m2'),
+          }
+          out={}
+          for name,(mp,sp,np) in defs.items():
+              m=v9.load_model(root/mp,root/sp); verts=body0(root/sp,m['n']); rec={'original':silhouette(m,verts)}
+              if np:
+                  nm=v9.load_model(root/np,root/sp); rec['v11']=silhouette(nm,verts); rec['dx']=dx_stats(m,nm,verts)
+              out[name]=rec
+              print('\n###',name); print(json.dumps(rec,indent=2))
+          print('\n### KEY')
+          print('Higher shoulder ratios = fuller/rounder side silhouette; apex_mean_dx >= shell_mean_dx means the tip is being pushed at least as hard as the surrounding mass.')
+          for race in ('Orc','Draenei','Scourge'):
+              r=out[race]
+              print(race,'orig->v11 shoulder04 %.3f->%.3f shoulder07 %.3f->%.3f FWHM %.3f->%.3f negative_dx %d apex/shell dx %.4f/%.4f' % (r['original']['shoulder04'],r['v11']['shoulder04'],r['original']['shoulder07'],r['v11']['shoulder07'],r['original']['fwhm_z'],r['v11']['fwhm_z'],r['dx']['negative'],r['dx']['apex_mean_dx'],r['dx']['shell_mean_dx']))
+          Path('analysis').mkdir(exist_ok=True); Path('analysis/side-silhouette-diagnostic.json').write_text(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: side-silhouette-diagnostic
+          path: analysis/side-silhouette-diagnostic.json
