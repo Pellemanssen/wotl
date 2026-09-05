@@ -1,0 +1,156 @@
+name: M2 breast roundness root-cause diagnostic
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - '.github/workflows/m2-roundness-rootcause.yml'
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Recreate v11 geometry for comparison
+        shell: bash
+        run: |
+          sed -i 's/if breast_changed < 80:/if breast_changed < 60:/' tools/m2_body_patch_v11_round_mass.py
+          sed -i 's/if shoulder_fill < 20:/if shoulder_fill < 10:/' tools/m2_body_patch_v11_round_mass.py
+          python tools/m2_body_patch_v11_round_mass_build.py >/tmp/v11-build.txt
+      - name: Diagnose reference, originals and v11
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys, math, struct, json
+          from pathlib import Path
+          sys.path.insert(0,'tools')
+          import m2_body_patch_v9_ale_transfer as v9
+
+          ROOT=Path('.')
+          BODY_GROUPS=v9.BODY_GROUPS
+
+          def u32(b,o): return struct.unpack_from('<I',b,o)[0]
+          def q(vals,p):
+              if not vals: return None
+              a=sorted(vals); t=(len(a)-1)*p; lo=int(t); hi=min(len(a)-1,lo+1); f=t-lo
+              return a[lo]*(1-f)+a[hi]*f
+
+          def section_sets(skin,nverts):
+              b=Path(skin).read_bytes(); nidx,oidx=u32(b,4),u32(b,8); nsub,osub=u32(b,28),u32(b,32)
+              idx=[struct.unpack_from('<H',b,oidx+i*2)[0] for i in range(nidx)]
+              out={}
+              for i in range(nsub):
+                  o=osub+i*48; sid=struct.unpack_from('<H',b,o)[0]; vs=struct.unpack_from('<H',b,o+4)[0]; vc=struct.unpack_from('<H',b,o+6)[0]
+                  s=out.setdefault(sid,set())
+                  for j in range(vs,min(vs+vc,len(idx))):
+                      vi=idx[j]
+                      if vi<nverts: s.add(vi)
+              return out
+
+          def smooth_profile(model, verts, front_q=.97):
+              NY,NZ=31,49; Y0,Y1=.04,.94; Z0,Z1=.57,.99
+              cells=[[[] for _ in range(NZ)] for _ in range(NY)]
+              for i in verts:
+                  x,y,z=model['pos'][i]
+                  yn=abs(y)/max(1e-8,model['arm_y']); zn=(z-model['root'][2])/model['torso']; xn=(x-model['cx'](z))/model['torso']
+                  if not(Y0<=yn<Y1 and Z0<=zn<Z1 and xn>-.24): continue
+                  j=min(NY-1,max(0,int((yn-Y0)/(Y1-Y0)*NY))); k=min(NZ-1,max(0,int((zn-Z0)/(Z1-Z0)*NZ)))
+                  cells[j][k].append(xn)
+              front=[[q(cells[j][k],front_q) for k in range(NZ)] for j in range(NY)]
+              # fill tiny vertical holes only
+              for j in range(NY):
+                  for k in range(NZ):
+                      if front[j][k] is not None: continue
+                      vals=[]
+                      for d in range(1,4):
+                          for kk in (k-d,k+d):
+                              if 0<=kk<NZ and front[j][kk] is not None: vals.append(front[j][kk])
+                          if vals: break
+                      if vals: front[j][k]=sum(vals)/len(vals)
+              aug=[[0.0]*NZ for _ in range(NY)]
+              for j in range(NY):
+                  pts=[]
+                  for k in range(NZ):
+                      zc=Z0+(Z1-Z0)*(k+.5)/NZ; f=front[j][k]
+                      if f is not None and (Z0<=zc<=.635 or .945<=zc<=Z1): pts.append((zc,f))
+                  if len(pts)>=2:
+                      mz=sum(a for a,b in pts)/len(pts); mx=sum(b for a,b in pts)/len(pts); den=sum((a-mz)**2 for a,b in pts) or 1
+                      slope=sum((a-mz)*(b-mx) for a,b in pts)/den; intercept=mx-slope*mz
+                  else:
+                      vals=[x for x in front[j] if x is not None]; intercept=q(vals,.25) if vals else 0; slope=0
+                  for k in range(NZ):
+                      if front[j][k] is not None:
+                          zc=Z0+(Z1-Z0)*(k+.5)/NZ; aug[j][k]=max(0,front[j][k]-(intercept+slope*zc))
+              def yc(j): return Y0+(Y1-Y0)*(j+.5)/NY
+              def zc(k): return Z0+(Z1-Z0)*(k+.5)/NZ
+              peak=max(max(r) for r in aug)
+              loc=max(((aug[j][k],j,k) for j in range(NY) for k in range(NZ)),key=lambda t:t[0])
+              pts=[]
+              for j in range(NY):
+                  for k in range(NZ):
+                      a=aug[j][k]
+                      if a>=peak*.45: pts.append((yc(j),zc(k),a))
+              sw=sum(a for y,z,a in pts) or 1; cy=sum(y*a for y,z,a in pts)/sw; cz=sum(z*a for y,z,a in pts)/sw
+              j=min(range(NY),key=lambda x:abs(yc(x)-cy)); arr=aug[j]
+              pk=max(arr); kp=max(range(NZ),key=lambda x:arr[x])
+              above=[k for k,a in enumerate(arr) if a>=pk*.5]
+              fwhm=(zc(max(above))-zc(min(above))) if above else 0
+              def samp(d):
+                  target=zc(kp)+d; kk=min(range(NZ),key=lambda x:abs(zc(x)-target)); return arr[kk]
+              s06=(samp(-.06)+samp(.06))/2; s10=(samp(-.10)+samp(.10))/2
+              return {'peak':peak,'cy':cy,'cz':cz,'peak_y':yc(loc[1]),'peak_z':zc(loc[2]),'fwhm_z':fwhm,'shoulder06':s06/max(pk,1e-9),'shoulder10':s10/max(pk,1e-9),'j':j,'kp':kp,'cells':cells,'front':front,'aug':aug,'yc':yc,'zc':zc}
+
+          def apex_gap(profile):
+              j,k=profile['j'],profile['kp']; vals=profile['cells'][j][k]
+              if len(vals)<2: return {'n':len(vals)}
+              a86=q(vals,.86); a97=q(vals,.97); a99=q(vals,.99); mx=max(vals)
+              return {'n':len(vals),'q86':a86,'q97':a97,'q99':a99,'max':mx,'max_minus_q86':mx-a86,'max_minus_q97':mx-a97}
+
+          cases=[
+            ('ALE_BloodElf',ROOT/'bloodelf/female/bloodelffemale.m2',ROOT/'bloodelf/female/bloodelffemale00.skin'),
+            ('Orc_original',ROOT/'Orc Female/OrcFemale.m2',ROOT/'Orc Female/OrcFemale00.skin'),
+            ('Draenei_original',ROOT/'Draenai Female/DRAENEIFemale.m2',ROOT/'Draenai Female/DRAENEIFemale00.skin'),
+            ('Scourge_original',ROOT/'Scourge Female/ScourgeFemale.m2',ROOT/'Scourge Female/ScourgeFemale00.skin'),
+            ('Orc_v11',ROOT/'generated_v11_round_mass/Character/Orc/Female/OrcFemale.m2',ROOT/'generated_v11_round_mass/Character/Orc/Female/OrcFemale00.skin'),
+            ('Draenei_v11',ROOT/'generated_v11_round_mass/Character/Draenei/Female/DraeneiFemale.m2',ROOT/'generated_v11_round_mass/Character/Draenei/Female/DraeneiFemale00.skin'),
+            ('Scourge_v11',ROOT/'generated_v11_round_mass/Character/Scourge/Female/ScourgeFemale.m2',ROOT/'generated_v11_round_mass/Character/Scourge/Female/ScourgeFemale00.skin'),
+          ]
+
+          result={}
+          for name,m2,skin in cases:
+              m=v9.load_model(m2,skin); secs=section_sets(skin,m['n'])
+              body=set(secs.get(0,set()))
+              eligible=set().union(*(s for sid,s in secs.items() if sid==0 or sid//100 in BODY_GROUPS))
+              print('\n###',name)
+              print('sections',[(sid,len(secs[sid])) for sid in sorted(secs)[:30]])
+              print('body0',len(body),'eligible',len(eligible),'allverts',m['n'])
+              source=body if len(body)>=80 else eligible
+              p=smooth_profile(m,source,.97); ag=apex_gap(p)
+              compact={k:p[k] for k in ('peak','cy','cz','peak_y','peak_z','fwhm_z','shoulder06','shoulder10')}
+              compact['apex_gap']=ag; compact['vertex_source']='sid0' if source is body else 'eligible'
+              result[name]=compact
+              print(json.dumps(compact,indent=2))
+
+          # Compare ALE vs each race and original vs v11.
+          ref=result['ALE_BloodElf']
+          print('\n### SUMMARY')
+          print('ALE roundness target: shoulder06 %.3f shoulder10 %.3f FWHM %.3f' % (ref['shoulder06'],ref['shoulder10'],ref['fwhm_z']))
+          for race in ('Orc','Draenei','Scourge'):
+              o=result[race+'_original']; v=result[race+'_v11']
+              print(race,
+                    'center shift v11-vs-native y %.3f z %.3f' % (v['cy']-o['cy'],v['cz']-o['cz']),
+                    'shoulder06 orig/v11/ALE %.3f %.3f %.3f' % (o['shoulder06'],v['shoulder06'],ref['shoulder06']),
+                    'FWHM orig/v11/ALE %.3f %.3f %.3f' % (o['fwhm_z'],v['fwhm_z'],ref['fwhm_z']),
+                    'apex gap q86 v11 %.4f' % v['apex_gap'].get('max_minus_q86',0.0))
+          Path('analysis').mkdir(exist_ok=True)
+          Path('analysis/roundness-rootcause.json').write_text(json.dumps(result,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roundness-rootcause
+          path: analysis/roundness-rootcause.json
