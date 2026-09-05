@@ -1,0 +1,29 @@
+name: ALE reference profile probe
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - 'tools/m2_ale_reference_probe.py'
+      - '.github/workflows/ale-reference-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Measure Blood Elf ALE profile
+        run: python tools/m2_ale_reference_probe.py | tee analysis/ale_reference_summary.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ale-reference-probe
+          path: |
+            analysis/ale_reference_probe.json
+            analysis/ale_reference_summary.txt
+          if-no-files-found: error
