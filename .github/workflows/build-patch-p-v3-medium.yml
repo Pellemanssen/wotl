@@ -1,0 +1,73 @@
+name: Build patch-P v3 Medium MPQ
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - 'tools/m2_body_patch_v3_medium.py'
+      - '.github/workflows/build-patch-p-v3-medium.yml'
+  workflow_dispatch:
+
+jobs:
+  build-mpq:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install StormLib MPQ utility
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y smpq
+          smpq --version
+      - name: Generate v3 Medium race-specific models
+        run: python tools/m2_body_patch_v3_medium.py
+      - name: Create WotLK MPQ v1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf mpqroot_v3 mpqextract_v3 patch-P.MPQ
+          mkdir -p mpqroot_v3
+          cp -a generated_v3_medium/Character mpqroot_v3/
+          cd mpqroot_v3
+          mapfile -t files < <(find Character -type f | sort)
+          printf 'Adding %s files to MPQ\n' "${#files[@]}"
+          smpq -c -M 1 -C ZLIB ../patch-P.MPQ "${files[@]}"
+          cd ..
+          smpq -i patch-P.MPQ | tee analysis/patch-P-v3-info.txt
+          smpq -l patch-P.MPQ | tee analysis/patch-P-v3-list.txt
+      - name: Validate archive names and round-trip bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            OrcFemale.m2 OrcFemale00.skin \
+            DraeneiFemale.m2 DraeneiFemale00.skin \
+            ScourgeFemale.m2 ScourgeFemale00.skin; do
+            grep -qi "$f" analysis/patch-P-v3-list.txt || { echo "Missing from MPQ: $f"; exit 1; }
+          done
+          mkdir mpqextract_v3
+          cd mpqextract_v3
+          smpq -x ../patch-P.MPQ
+          cd ..
+          cmp generated_v3_medium/Character/Orc/Female/OrcFemale.m2 mpqextract_v3/Character/Orc/Female/OrcFemale.m2
+          cmp generated_v3_medium/Character/Orc/Female/OrcFemale00.skin mpqextract_v3/Character/Orc/Female/OrcFemale00.skin
+          cmp generated_v3_medium/Character/Draenei/Female/DraeneiFemale.m2 mpqextract_v3/Character/Draenei/Female/DraeneiFemale.m2
+          cmp generated_v3_medium/Character/Draenei/Female/DraeneiFemale00.skin mpqextract_v3/Character/Draenei/Female/DraeneiFemale00.skin
+          cmp generated_v3_medium/Character/Scourge/Female/ScourgeFemale.m2 mpqextract_v3/Character/Scourge/Female/ScourgeFemale.m2
+          cmp generated_v3_medium/Character/Scourge/Female/ScourgeFemale00.skin mpqextract_v3/Character/Scourge/Female/ScourgeFemale00.skin
+          sha256sum patch-P.MPQ | tee analysis/patch-P-v3.sha256
+      - name: Upload ready-to-test patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-P-WotLK-Extra-v3-Medium
+          path: |
+            patch-P.MPQ
+            analysis/body_patch_v3_medium_report.json
+            analysis/patch-P-v3-info.txt
+            analysis/patch-P-v3-list.txt
+            analysis/patch-P-v3.sha256
+          if-no-files-found: error
