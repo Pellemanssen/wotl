@@ -1,0 +1,20 @@
+name: Inspect M2 skin profiles
+
+on:
+  push:
+    branches: [work/a-little-extra-transfer]
+    paths:
+      - 'tools/inspect_skin_profiles.py'
+      - '.github/workflows/inspect-skin-profiles.yml'
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/a-little-extra-transfer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tools/inspect_skin_profiles.py
